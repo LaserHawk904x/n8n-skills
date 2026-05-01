@@ -1,0 +1,389 @@
+{
+  "name": "GHL Bulk Class Booking",
+  "nodes": [
+    {
+      "id": "2c004783-bb1c-44b7-8bb1-dd526e371acb",
+      "name": "Receive Slot Request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        240,
+        300
+      ],
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "ghl-bulk-booking",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "4af21733-047c-4f4b-9fbe-2fc0900551e4"
+    },
+    {
+      "id": "f873fb3c-01bf-4434-8c6b-dcd7e2c2e2b4",
+      "name": "Fetch GHL Free Slots",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        500,
+        300
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "https://services.leadconnectorhq.com/calendars/aEQMDSqBvV7BTesprnm8/free-slots",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "specifyQuery": "keypair",
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "startDate",
+              "value": "={{ $json.query.startDate }}"
+            },
+            {
+              "name": "endDate",
+              "value": "={{ $json.query.endDate }}"
+            },
+            {
+              "name": "timezone",
+              "value": "={{ $json.query.timezone || \"America/New_York\" }}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Version",
+              "value": "2021-07-28"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        }
+      },
+      "alwaysOutputData": true,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "pYkWvSMKMqllY78E",
+          "name": "GHL Private Integration Token"
+        }
+      }
+    },
+    {
+      "id": "f0d6c72a-b3d9-4703-9349-90b771b757f4",
+      "name": "Build Slot Selection Form",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        760,
+        300
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const items = $input.all();\nconst slotsData = items[0]?.json || {};\nconst webhookQuery = $(\"Receive Slot Request\").first().json.query;\nconst contactId = webhookQuery.contactId || \"\";\nconst timezone = webhookQuery.timezone || \"America/New_York\";\n\n// Build the submit webhook URL from the current webhook URL\nconst proto = $(\"Receive Slot Request\").first().json.headers?.[\"x-forwarded-proto\"] || \"https\";\nconst host = $(\"Receive Slot Request\").first().json.headers?.host || \"\";\nconst submitUrl = proto + \"://\" + host + \"/webhook/ghl-bulk-booking-submit\";\n\n// Collect all slots from the response\nlet allSlots = [];\nconst skipKeys = [\"traceId\", \"headers\", \"statusCode\", \"statusMessage\"];\nconst dates = Object.keys(slotsData).filter(k => !skipKeys.includes(k) && /^\\d{4}-\\d{2}-\\d{2}$/.test(k));\n\nfor (const date of dates.sort()) {\n  const dayData = slotsData[date];\n  if (dayData && dayData.slots && Array.isArray(dayData.slots)) {\n    for (const slot of dayData.slots) {\n      allSlots.push({\n        date: date,\n        startTime: slot.startTime,\n        endTime: slot.endTime\n      });\n    }\n  }\n}\n\nlet slotsHtml = \"\";\nif (allSlots.length === 0) {\n  slotsHtml = '<p style=\"color:#e74c3c;font-weight:bold;\">No available slots found for the selected date range.</p>';\n  slotsHtml += '<p>This may mean the calendar has no open hours configured for these dates, or all slots are already booked.</p>';\n  slotsHtml += '<p>You can still manually enter slot times below to force-book with <code>ignoreFreeSlotValidation</code>.</p>';\n  slotsHtml += '<div style=\"margin-top:20px;padding:15px;background:#fff3cd;border-radius:8px;\">';\n  slotsHtml += '<h3>Manual Booking</h3>';\n  slotsHtml += '<p>Enter start times in ISO format (e.g., 2026-05-05T10:00:00-04:00). One per line. End time defaults to 1 hour later.</p>';\n  slotsHtml += '<textarea name=\"manualSlots\" rows=\"6\" style=\"width:100%;padding:8px;font-family:monospace;\" placeholder=\"2026-05-05T10:00:00-04:00\"></textarea>';\n  slotsHtml += '</div>';\n} else {\n  let currentDate = \"\";\n  for (let i = 0; i < allSlots.length; i++) {\n    const slot = allSlots[i];\n    if (slot.date !== currentDate) {\n      currentDate = slot.date;\n      const dateObj = new Date(slot.date + \"T00:00:00\");\n      const dayName = dateObj.toLocaleDateString(\"en-US\", { weekday: \"long\", month: \"long\", day: \"numeric\", year: \"numeric\" });\n      slotsHtml += '<h3 style=\"margin-top:20px;color:#2c3e50;\">' + dayName + '</h3>';\n    }\n    const startObj = new Date(slot.startTime);\n    const endObj = new Date(slot.endTime);\n    const timeStr = startObj.toLocaleTimeString(\"en-US\", { hour: \"numeric\", minute: \"2-digit\", hour12: true }) + \" - \" + endObj.toLocaleTimeString(\"en-US\", { hour: \"numeric\", minute: \"2-digit\", hour12: true });\n    slotsHtml += '<label style=\"display:block;padding:8px 12px;margin:4px 0;background:#f8f9fa;border-radius:6px;cursor:pointer;\">';\n    slotsHtml += '<input type=\"checkbox\" name=\"selectedSlots\" value=\"' + slot.startTime + \"|\" + slot.endTime + '\" style=\"margin-right:10px;\"> ';\n    slotsHtml += timeStr;\n    slotsHtml += '</label>';\n  }\n}\n\nconst html = '<!DOCTYPE html>' +\n'<html lang=\"en\">' +\n'<head>' +\n'<meta charset=\"UTF-8\">' +\n'<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">' +\n'<title>Bulk Class Booking</title>' +\n'<style>' +\n'* { box-sizing: border-box; margin: 0; padding: 0; }' +\n'body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif; background: #f0f2f5; padding: 20px; }' +\n'.container { max-width: 600px; margin: 0 auto; background: white; border-radius: 12px; padding: 30px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }' +\n'h1 { color: #1a73e8; margin-bottom: 5px; }' +\n'h2 { color: #5f6368; font-weight: normal; font-size: 1rem; margin-bottom: 20px; }' +\n'.btn { background: #1a73e8; color: white; border: none; padding: 12px 30px; border-radius: 6px; font-size: 1rem; cursor: pointer; margin-top: 20px; }' +\n'.btn:hover { background: #1557b0; }' +\n'.btn-select-all { background: #34a853; color: white; border: none; padding: 8px 16px; border-radius: 6px; font-size: 0.85rem; cursor: pointer; margin-bottom: 10px; }' +\n'.info { background: #e8f0fe; padding: 12px; border-radius: 6px; margin-bottom: 15px; font-size: 0.9rem; }' +\n'#result { margin-top: 20px; padding: 15px; border-radius: 8px; display: none; white-space: pre-wrap; }' +\n'.success { background: #e6f4ea; color: #137333; }' +\n'.error { background: #fce8e6; color: #c5221f; }' +\n'</style>' +\n'</head>' +\n'<body>' +\n'<div class=\"container\">' +\n'<h1>Cheer Doctor Class Booking</h1>' +\n'<h2>Select time slots to book</h2>' +\n'<div class=\"info\">Contact ID: <strong>' + contactId + '</strong> | Timezone: <strong>' + timezone + '</strong></div>' +\n'<form id=\"bookingForm\">' +\n'<input type=\"hidden\" name=\"contactId\" value=\"' + contactId + '\">' +\n'<input type=\"hidden\" name=\"timezone\" value=\"' + timezone + '\">' +\n'<button type=\"button\" class=\"btn-select-all\" onclick=\"toggleAll()\">Select All / Deselect All</button>' +\nslotsHtml +\n'<button type=\"submit\" class=\"btn\">Book Selected Slots</button>' +\n'</form>' +\n'<div id=\"result\"></div>' +\n'</div>' +\n'<script>' +\n'function toggleAll() {' +\n'  var cbs = document.querySelectorAll(\"input[name=selectedSlots]\");' +\n'  var allChecked = true;' +\n'  for (var i = 0; i < cbs.length; i++) { if (!cbs[i].checked) { allChecked = false; break; } }' +\n'  for (var i = 0; i < cbs.length; i++) { cbs[i].checked = !allChecked; }' +\n'}' +\n'document.getElementById(\"bookingForm\").addEventListener(\"submit\", function(e) {' +\n'  e.preventDefault();' +\n'  var resultDiv = document.getElementById(\"result\");' +\n'  resultDiv.style.display = \"none\";' +\n'  var contactId = document.querySelector(\"input[name=contactId]\").value;' +\n'  var timezone = document.querySelector(\"input[name=timezone]\").value;' +\n'  var selectedSlots = [];' +\n'  var checkboxes = document.querySelectorAll(\"input[name=selectedSlots]:checked\");' +\n'  for (var i = 0; i < checkboxes.length; i++) {' +\n'    var parts = checkboxes[i].value.split(\"|\");' +\n'    selectedSlots.push({ startTime: parts[0], endTime: parts[1] });' +\n'  }' +\n'  var manualTextarea = document.querySelector(\"textarea[name=manualSlots]\");' +\n'  if (manualTextarea && manualTextarea.value.trim()) {' +\n'    var lines = manualTextarea.value.trim().split(\"\\n\");' +\n'    for (var i = 0; i < lines.length; i++) {' +\n'      if (lines[i].trim()) {' +\n'        var st = lines[i].trim();' +\n'        var sd = new Date(st);' +\n'        var ed = new Date(sd.getTime() + 60 * 60 * 1000);' +\n'        selectedSlots.push({ startTime: st, endTime: ed.toISOString() });' +\n'      }' +\n'    }' +\n'  }' +\n'  if (selectedSlots.length === 0) {' +\n'    resultDiv.className = \"error\";' +\n'    resultDiv.textContent = \"Please select at least one slot.\";' +\n'    resultDiv.style.display = \"block\";' +\n'    return;' +\n'  }' +\n'  var submitBtn = document.querySelector(\".btn\");' +\n'  submitBtn.disabled = true;' +\n'  submitBtn.textContent = \"Booking \" + selectedSlots.length + \" slots...\";' +\n'  fetch(\"' + submitUrl + '\", {' +\n'    method: \"POST\",' +\n'    headers: { \"Content-Type\": \"application/json\" },' +\n'    body: JSON.stringify({ contactId: contactId, timezone: timezone, selectedSlots: selectedSlots })' +\n'  })' +\n'.then(function(response) { return response.json(); })' +\n'.then(function(data) {' +\n'  resultDiv.className = \"success\";' +\n'  var msg = \"Booking complete!\";' +\n'  if (data.results) {' +\n'    var successes = 0; var failures = 0;' +\n'    for (var i = 0; i < data.results.length; i++) {' +\n'      if (data.results[i].success) successes++; else failures++;' +\n'    }' +\n'    msg = \"Booked: \" + successes + \" | Failed: \" + failures;' +\n'    if (failures > 0) {' +\n'      resultDiv.className = \"error\";' +\n'      msg += \"\\n\\nFailed slots:\";' +\n'      for (var i = 0; i < data.results.length; i++) {' +\n'        if (!data.results[i].success) {' +\n'          msg += \"\\n- \" + data.results[i].startTime + \": \" + data.results[i].error;' +\n'        }' +\n'      }' +\n'    }' +\n'  }' +\n'  resultDiv.textContent = msg;' +\n'  resultDiv.style.display = \"block\";' +\n'  submitBtn.disabled = false;' +\n'  submitBtn.textContent = \"Book Selected Slots\";' +\n'})' +\n'.catch(function(err) {' +\n'  resultDiv.className = \"error\";' +\n'  resultDiv.textContent = \"Error: \" + err.message;' +\n'  resultDiv.style.display = \"block\";' +\n'  submitBtn.disabled = false;' +\n'  submitBtn.textContent = \"Book Selected Slots\";' +\n'});' +\n'});' +\n'</script>' +\n'</body>' +\n'</html>';\n\nreturn [{ json: { html: html } }];"
+      }
+    },
+    {
+      "id": "e840c208-1301-4555-9ea1-0963d6c0e20a",
+      "name": "Return Slot Selection Form",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1020,
+        300
+      ],
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.html }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/html; charset=utf-8"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "c2e2dccc-1ccb-40fb-85ce-8e6302c54925",
+      "name": "Receive Booking Submissions",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        240,
+        700
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ghl-bulk-booking-submit",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "72573fe4-1c14-4129-ac47-b9653cbfa53c"
+    },
+    {
+      "id": "aef73a22-52a5-4624-b1e2-a89db6d9f808",
+      "name": "Prepare Slot Items for Loop",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        700
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const body = $input.first().json.body;\nconst contactId = body.contactId;\nconst timezone = body.timezone || \"America/New_York\";\nconst selectedSlots = body.selectedSlots || [];\n\nconst items = selectedSlots.map(slot => ({\n  json: {\n    contactId: contactId,\n    timezone: timezone,\n    startTime: slot.startTime,\n    endTime: slot.endTime,\n    calendarId: \"aEQMDSqBvV7BTesprnm8\",\n    locationId: \"roM3u8ZgkU8ALWDRskJh\"\n  }\n}));\n\nreturn items;"
+      }
+    },
+    {
+      "id": "c4db7302-9083-4876-962b-7a095946b7c3",
+      "name": "Aggregate All Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1020,
+        600
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const allItems = $input.all();\nconst results = allItems.map(item => item.json);\nreturn [{ json: { results: results, total: results.length, successes: results.filter(r => r.success).length, failures: results.filter(r => !r.success).length } }];"
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "e1763a4e-80c3-4c7a-a907-9035d1382fcd",
+      "name": "Return Booking Results",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1280,
+        600
+      ],
+      "parameters": {
+        "respondWith": "allIncomingItems",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "1d9deefd-a33c-42b5-b77d-4fac318f3721",
+      "name": "Create GHL Appointment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1020,
+        800
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://services.leadconnectorhq.com/calendars/events/appointments",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Version",
+              "value": "2021-07-28"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ calendarId: $json.calendarId, locationId: $json.locationId, contactId: $json.contactId, startTime: $json.startTime, endTime: $json.endTime, title: \"Cheer Workout Class\", appointmentStatus: \"confirmed\", assignedUserId: \"yteJJteIK1NEf1JM6og7\", ignoreFreeSlotValidation: true, toNotify: false }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "alwaysOutputData": true,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "pYkWvSMKMqllY78E",
+          "name": "GHL Private Integration Token"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "d2a45618-0138-447d-82bd-7cedf1c49ce7",
+      "name": "Record Booking Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1280,
+        800
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const item = $input.first().json;\nconst slotInfo = $(\"Loop Through Slots\").first().json;\nconst hasError = !!(item.statusCode && item.statusCode >= 400) || !!item.error || !!item.errorMessage;\nconst result = {\n  startTime: slotInfo.startTime,\n  endTime: slotInfo.endTime,\n  success: !hasError && !!item.id,\n  appointmentId: item.id || null,\n  error: hasError ? (item.error || item.errorMessage || item.message || \"API error\") : null\n};\nreturn [{ json: result }];"
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "88e90a45-310d-42fb-a11f-346468ef3817",
+      "name": "Loop Through Slots",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        760,
+        700
+      ],
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      }
+    },
+    {
+      "id": "f0ccdf52-6fab-4493-8c75-a031bee99b3f",
+      "name": "Sticky Note 3a12d968",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -200,
+        -200
+      ],
+      "parameters": {
+        "content": "## GHL Bulk Class Booking Workflow\n\nThis workflow allows bulk booking of multiple appointments on a GHL class booking calendar.\n\n### How to use:\n1. Call Webhook 1 (GET) with query params: contactId, startDate (epoch ms), endDate (epoch ms), and optionally timezone\n2. A form page with available slots (checkboxes) is returned\n3. Select desired slots and submit\n4. Webhook 2 receives the selections and books each appointment via GHL API\n\n### Setup:\n- Create an HTTP Header Auth credential named \"GHL Private Integration Token\" with:\n  - Name: Authorization\n  - Value: Bearer pit-f28f2011-e59a-4e3d-8832-777428a5366b\n- The Version header (2021-07-28) is added directly in each HTTP Request node.",
+        "color": 4,
+        "width": 500,
+        "height": 400
+      }
+    }
+  ],
+  "connections": {
+    "Receive Slot Request": {
+      "main": [
+        [
+          {
+            "node": "Fetch GHL Free Slots",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch GHL Free Slots": {
+      "main": [
+        [
+          {
+            "node": "Build Slot Selection Form",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Slot Selection Form": {
+      "main": [
+        [
+          {
+            "node": "Return Slot Selection Form",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Receive Booking Submissions": {
+      "main": [
+        [
+          {
+            "node": "Prepare Slot Items for Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Slot Items for Loop": {
+      "main": [
+        [
+          {
+            "node": "Loop Through Slots",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate All Results": {
+      "main": [
+        [
+          {
+            "node": "Return Booking Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create GHL Appointment": {
+      "main": [
+        [
+          {
+            "node": "Record Booking Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Booking Result": {
+      "main": [
+        [
+          {
+            "node": "Loop Through Slots",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Through Slots": {
+      "main": [
+        [
+          {
+            "node": "Aggregate All Results",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create GHL Appointment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": true
+  },
+  "active": true
+}
